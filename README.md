@@ -8,7 +8,7 @@ Check this before using them!!!
 
 It supports zeroing:
 
-- Z-height only, or including zero's X/Y at the 3D probe tip as well, as a rough reference
+- Z-height only, or including zero X/Y at the 3D probe tip as well, as a rough reference
  
 - X/Y, and if selected Z, at each of the workpiece corners (selectable)
  
