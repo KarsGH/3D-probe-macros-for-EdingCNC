@@ -1,0 +1,697 @@
+;#########################################################################################
+;#########################################################################################
+;##############      START WORKPIECE ZEROING USING THE 3D PROBE       ####################
+;#########################################################################################
+;#########################################################################################
+
+; NV parameters used in Workpiece zeroing routines + Sub calibrate_tool_setter
+
+;* #4981=...	; 3D Probe X offset (set manualy)
+;* #4982=... 	; 3D Probe Y offset (set manualy)
+;* #4983=...	; 3D Probe Z offset (set manualy)
+;* #4984= 1		; When using 3D-finder as 'Normally Open', then set #4984 to "1" in CNC.INI 
+;* #4986=...	; 3D-finder Tip-Ball radius (set by calibration routine)
+;* #4987=...	; 3D-finder Radius-Offset (set by calibration routine)
+;* #4988= 200	; Probing Feed (fast) (mm/min)
+;* #4989= 10	; Measurement feed (slow) (mm/min)
+
+;* #4994 = ...  ; captured zero position (MC) with 3D probe used for consecutive tool changes
+
+;* #4995 = ...  ; Variable tool setter height for zeroing Z, used in zero_z
+
+;* #4996 = ...  ; Tool measurement safe hight, used inside m_tool
+;* #4997 = ...  ; X position of tool length measurement
+;* #4998 = ...  ; Y position of tool length measurement
+;* #4999 = ...  ; Chuck height, or zero - tool length height
+
+
+; Volatile parameters used in Workpiece zeroing routines
+
+; #900	Corner to measure (input parameter; 1=left-bottom, 2=left-top, 3=right-top, 4= right-bottom)
+; #901	Action (Input parameter; 1= zero all, 2= zero XY)
+; #902	XY depth (Input parameter; measurement depth below measured Z for the X and Y edges)
+; #903	Move out dist. (Input parameter; distance to move out from initial pos. before lowering Z)
+; #904	Safe-Z height (Input Corner zeroing; distance to move above measured Z-0 before move to next point)
+
+; #906 Direction for X move (Sub 3D_Workpiece_Corner_Zeroing_probe)
+; #907 Direction for Y move (Sub 3D_Workpiece_Corner_Zeroing_probe)
+; #908 X start position (Sub 3D_Workpiece_Corner_Zeroing_probe)
+; #909 Y start position (Sub 3D_Workpiece_Corner_Zeroing_probe)
+; #910 Z-zero position (Sub 3D_Workpiece_Corner_Zeroing_probe)
+
+; #912 Include XY flag for "Sub zero_z_3D"
+
+; #915 Inside/Outside flag for "Circle_Zeroing"
+; #916 Approx diameter for "Circle_Zeroing"
+; #917 Repeat? (0=auto), number or repeats to increase accuracy. Auto is only repeat X if delta X/Y >1%
+; #918 Safe-Z height (Input Circle Zeroing; distance to move above zurrent Z-0 before move to next point)
+
+; #921 Measured X value in MC (Output of "Sub 3D_Workpiece_Corner_Zeroing_probe")
+; #922 Measured Y value in MC (Output of "Sub 3D_Workpiece_Corner_Zeroing_probe")
+; #923 Measured Z value in MC
+
+; #925 Average X value (Circle zeroing)
+; #926 Average Y value (Circle zeroing)
+
+
+;*********************************************************
+;***** User subroutine calls for 3D probe routines *******
+;*********************************************************
+
+; Measure current Tool length and store as Z-zero for later Tool Changes
+Sub user_2
+    Gosub Tool_Referencing
+Endsub
+
+; Z-zeroing using the 3D probe
+Sub user_4
+    Gosub zero_z_3D
+Endsub
+
+; Workpiece Corner zeroing (Z, X, Y)
+Sub user_5
+    Gosub 3D_Workpiece_Corner_Zeroing
+Endsub
+
+; Tool length measurement after 3D probe Z-zeroing
+Sub user_6
+    Gosub M_Tool_after_3D_or_Ref
+Endsub
+
+; Zeroing X/Y on a hole or cylinder
+Sub user_7
+    Gosub 3D_Workpiece_Circle_Zeroing
+Endsub
+
+
+
+;************************************************************************
+; Measure current Tool length and store as Z-zero for later Tool Changes
+;************************************************************************
+
+Sub Tool_Referencing
+ 
+    If [[#5380==0] and [#5397==0]] ;do this only when not simulating and not rendering
+        If [#5068 <> #4984]] ;toolsetter available?
+			warnmsg "Toolsetter not available!!!"
+		Else
+           G0 G53 z#4996 ; move to safe z
+            dlgmsg "Tool Referencing" "tool number" 5016 "approx tool length" 5017 "tool diameter" 5018
+			If [#5398 == 1] ;User pressed OK?
+
+				While [[#5016 < 1] OR [#5016 > 99]]
+					DlgMsg "Tool must be in range of 1 .. 99" "tool number" 5016
+				Endwhile
+			
+				G0 G53 x#4997 y#4998	   ; move to toolsetter coordinates
+				F1000
+				G01 G53 z[#4999+12+#5017] 	; move to 12mm above chuck height
+				F[#4988] 			;Start probe move at low feed rate
+				G91 G38.2 z-20		;First probe move, not more than 20mm below start position
+	
+				If [#5067 <> 1]		; When sensor did not trip
+					warnmsg "Tool setter did not trip"
+				Endif
+	
+				G90 G1 Z[#5063+0.2]  	;Move back to touch point +0.2mm
+				F[#4989]  			; reduce feed
+				G91 G38.2 z-0.4 		; Repeat measurement at ultra low feed rate
+	
+				If [#5067 <> 1]		; When sensor did not trip
+					warnmsg "Sensor did not trip in second move"
+				Endif
+	
+				G90				; Absolute coordinates
+				F1000			; restore feed rate to a practical value
+				G0 G53 z#4996		; back to safe height
+	
+				; Calculate tool offset and update reference tool height in #4994
+				#5017 = [#5053 - #4999]	; Tool lenght is trippoint minus chuck height
+				msg "Measured Tool Offset is: "#5017"mm"
+				#4994 = [#5223 - #5017]
+	
+				; Store tool data
+				#[5400 + #5016] = 0	; Tool length set to "0" because tool length is corrected by Z-zero adjustment
+				#[5500 + #5016] = #5018 	; Store tool diameter for radius correction purposes
+				msg "Tool Diameter="#[5500 + #5016]" stored at tool "#5016
+			Else
+				msg "Tool Referening => User Canceled !"
+			Endif
+		Endif
+    Else
+		msg "Not available in simulation mode"
+    Endif
+Endsub
+
+
+;****************************************************
+;  Workpiece Z-zeroing using the 3D probe
+;****************************************************
+
+Sub zero_z_3D
+ 
+  If [[#5380==0] and [#5397==0]] 	;do this only when not simulating and not rendering
+		If [[[#4996 == 0] and [#4997 == 0] and [#4998 == 0] and [#4999 == 0]] OR [#5068 <> #4984]] ;3D-Probe calibrated and available?
+            errmsg "3D Probe not Ready - or not Calibrated"
+        Else
+ 
+			#912 = 0				; Initialize input parameter
+	
+			Dlgmsg "Z-Zeroing using 3D Probe" "zero XY at this pos.?" 912
+			If [#5398 == 1]			; User pressed OK?
+	
+				F[#4988] 			; Start probe move at low feed rate
+				G91 G38.2 z-16		; First probe move, not more than 16mm below start position
+		
+				If [#5067 <> 1]		; When sensor did not trip
+					errmsg "No workpiece detected"
+				Endif
+		
+				G90 G1 z[#5063+0.2]  	; Move back to touch point +0.2mm
+				F[#4989]  				; reduce feed
+				G91 G38.2 z-0.4 		; Repeat measurement at ultra low feed rate
+		
+				If [#5067 <> 1]			; When sensor did not trip
+					errmsg "Sensor did not trip in second move"
+				Endif
+		
+				G10 L2 P#5220 Z[#5053-#4983]	; Zero Z for current coordinate system
+				#4994 = [#5053-#4983]	; Save captured machine position in #4994 for consecutive tool changes 
+		
+				If [#912 == 1]
+					G10 L2 P#5220 X[#5051-#4981] Y[#5052-#4982] ; also zero X&Y if #912 = 1
+				Endif
+		
+				F1000				; restore feed rate to a practical value
+				G91 G1 Z5			; move to 5 mm above measured surface
+				G90 				; absolute distance mode
+			Else
+				msg "Z zeroing => User Canceled !"
+			Endif
+		Endif
+   Else
+      msg "Not available in simulation mode"
+   Endif
+Endsub  
+
+
+;****************************************************************
+;    Workpiece Corner Zeroing with the 3D-Probe
+;****************************************************************
+
+Sub 3D_Workpiece_Corner_Zeroing		; Workpiece corner finding measurement
+
+    If [[#5380==0] AND [#5397==0]] 	;do this only when not simulating and not rendering
+
+		If [[[#4996 == 0] and [#4997 == 0] and [#4998 == 0] and [#4999 == 0]] OR [#5068 <> #4984]] ;3D-Probe calibrated and available?
+            errmsg "3D Probe not Ready - or not Calibrated"
+        Else
+		
+			#900 = 1	; Init corner to Left-Bottom
+			#901 = 1	; Init Action to Zero All
+			#902 = 3	; Init XY below measured Z to 3mm
+			#903 = 5	; Init Safe-Z height above measured Z to 5mm
+			#904 = 10	; Init move out distance to 10mm
+	
+			Dlgmsg "Workpiece Corner Zeroing" "Select Corner" 900 "Action (1=XYZ, 2=XY)" 901 "XY depth" 902 "Move out dist." 904 "Safe-Z Height" 903
+			If [#5398 == 1]			; User pressed OK?
+				If [[#900>0] AND [#900<5] AND [#901>=1] AND [#901<=2] AND [#902>=[#4986]] AND [#902<=6] AND [#904>#4986] AND [#904<=15] AND [#903>=1] AND [#903<=30]]   ; Check input parameter integrity
+	
+					G91 G38.2 Z-16 F[#4988]	; First probe move, not more than 16mm below start position (low feed rate)
+	
+					If [#5067 <> 1]			; When sensor did not trip
+						errmsg "No workpiece detected"
+					Endif
+	
+					G90 G1 Z [#5063+0.2]  	; Move back to touch point +0.2mm
+					F[#4989]  				; ultra low feed rate
+					G91 G38.2 z-0.4 		; Repeat measurement at ultra low feed rate
+					F[#4988] 				; Low feed rate
+	
+					If [#5067 <> 1]			; When sensor did not trip
+						errmsg "Sensor did not trip in second move"
+					Endif
+					
+					#923 = #5053			; Store measured Z value in #923 (MC)
+	
+					; prepare parameters for "Sub 3D_XYprobe"
+					#911 = #5001			; current X position to #911 (WC)
+					#912 = #5002			; current Y position to #912 (WC)
+					#913 = #5063			; Probed Z value to #913 (WC)
+					
+					#915 = [#913 + #903]	; Safe Z level to #915 (WC)
+					#916 = [#913-#902-#4986]; Z-measurement level to #916 (WC)
+					#917 = [#904 + #4986]	; Move out distance; #904 + ball-radius
+					
+					G90 G1 Z[#915] F[#4988]		; Move to Safe-Z height at low feed rate
+	
+					If [[#900 == 1] OR [#900 == 2]]	; for left corners X move out is negative
+						#918 = -1			; set X- direction
+					Else
+						#918 = 1			; set X+ direction
+					Endif
+						Gosub 3D_X_moves_outside
+					
+					If [[#900 == 1] OR [#900 == 4]]	; for Bottom corners Y move out is negative
+						#918 = -1			; set Y- direction
+					Else
+						#918 = 1				; set Y+ direction
+					Endif
+					
+					Gosub 3D_Y_moves_outside
+					G90 G1 Z[#915] F[#4988]	; Move to Safe-Z height
+	
+					If [#901==1]
+						G10 L2 P#5220 X[#921-#4981] Y[#922-#4982] Z[#923-#4983]  ; Set active coordiate system to found X/Y/Z values
+						msg "Active Coordinate System (XYZ) updated !!!"
+							#4994 = [#923-#4983]	; Store measured Z coordinate in #4994 for consecutive tool changes
+					Else
+						G10 L2 P#5220 X[#921-#4981] Y[#922-#4982]	; Set active coordiate system to found X and Y values only
+						msg "Active Coordinate System (XY only) updated !!!"
+					Endif
+	
+					F1000					; restore feed rate to a practical value
+					G90						; restore absolute distance mode
+	
+				Else
+					msg "Input parameters out of range !"
+				Endif
+			Else
+				msg "Corner Zeroing => User Canceled !"
+			Endif
+		Endif
+	Else
+		msg "Not available in simulation mode"
+    Endif
+Endsub
+
+
+;****************************************************************
+;    Workpiece Circle Zeroing with the 3D-Probe
+;****************************************************************
+
+;		#900 = 1	; Inside / Outside flag (1=inside)
+;		#901 = 0	; Approx. diameter (<4 is error)
+;		#902 = 3	; Measurement depth below Z-0 (>5 is error)
+;		#903 = 5	; Safe-Z height
+
+;		#911 X start position (WC)
+;		#912 Y start position (WC)
+;		#913 Z-zero position (WC)
+
+;		#915  Safe-Z level
+;		#916  Z-measurement level
+;		#917  move out distance
+;		#918  move out direction flag
+
+;		#921 Measured X value in MC (Output of "3D_X/Y_move routines")
+;		#922 Measured Y value in MC (Output of "3D_X/Y_move routines")
+;		#923 Measured Z value in MC
+
+;		#925 Temp X value (Circle zeroing)
+;		#926 Temp X value (Circle zeroing)
+;		#927 Temp Y value (Circle zeroing)
+;		#928 Temp Y value (Circle zeroing)
+
+Sub 3D_Workpiece_Circle_Zeroing		; Workpiece inner or outer Circle center zeroing
+
+    If [[#5380==0] AND [#5397==0]] 	;do this only when not simulating and not rendering
+
+		If [[[#4996 == 0] and [#4997 == 0] and [#4998 == 0] and [#4999 == 0]] OR [#5068 <> #4984]] ;3D-Probe calibrated and available?
+            errmsg "3D Probe not Ready - or not Calibrated"
+        Else
+
+			#900 = 1	; Inside / Outside flag (0=inside)
+			#901 = 0	; Approx. diameter (<4 is error)
+			#902 = 3	; Measurement depth below Z-0 (>5 is error)
+			#903 = 5	; Safe-Z height
+	
+			Dlgmsg "Workpiece Circle Zeroing" "Inside/Outside (1/2)" 900 "Diameter (+/-2mm)" 901 "Depth below Z-0" 902 "Safe-Z Height" 903
+			If [#5398 == 1]			; User pressed OK?
+				If [[#900>=1] AND[#900<=2] AND [#901>=4] AND [#902>0] AND [#902<=5] AND [#903>=1] AND [#903<=30]]   ; Check input parameter integrity
+	
+					#923 = [#[5203+[#5220*20]] + #4983]	; current Z-0 plus probe Z-delta to #923 (- local Z-0)
+					G53 G1 Z[#923+#903] F[#4988] 	; Move to safe Z at low feed rate
+	
+					; prepare parameters for "Sub 3D_X_probe"
+					#911 = #5001			; current X position to #911 (WC)
+					#912 = #5002			; current Y position to #912 (WC)
+					#913 = #5003			; current Z position (=safe Z) to #913 (WC)
+					
+					#915 = #913						; Safe Z level to #915 (WC)
+					#916 = [#913-#903-#902-#4986]	; Z-measurement level to #916 (WC)
+					#917 = [[#901/2]+ 3.1 + #4986]	; Move out distance; 1/2D +3.1mm (margin) + ball-radius
+	
+					If [#900 == 2]			; Outside measurement
+						#918 = -1			; set X- direction
+						Gosub 3D_X_moves_outside
+						#925 = #921			; measured value to #925 (MC)
+						
+						#918 = 1			; set X+ direction
+						Gosub 3D_X_moves_outside
+						#926 = #921			; measured value to #926 (MC)
+						
+						G53 G1 X[[#925 + #926]/2]	; position X to new center point
+						#921 = [[#925 + #926]/2]	; store current X center pos. #921
+						#911 = #5001			; update current X position (WC)
+						msg "Measured X distance = " [#926 - #925]
+						
+						#918 = -1			; set Y- direction
+						Gosub 3D_Y_moves_outside
+						#927 = #922			; measured value to #927 (MC)
+						
+						#918 = 1			; set Y+ direction
+						Gosub 3D_Y_moves_outside
+						#928 = #922			; measured value to #928 (MC)
+						
+						G53 G1 Y[[#927 + #928]/2]	; position Y to new center point
+						#922 = [[#927 + #928]/2]	; store current Y center pos. #922
+						#912 = #5002				; update current Y position (WC)
+						msg "Measured Y distance = " [#928 - #927]
+	
+						If [ABS[[#926-#925] - [#928-#927]] > [[#928-#927]/200]]	; repeat X measurement if delta XY >1%
+							#918 = -1				; set X- direction
+							Gosub 3D_X_moves_outside
+							#925 = #921				; measured value to #925 (MC)
+						
+							#918 = 1				; set X+ direction
+							Gosub 3D_X_moves_outside
+							#926 = #921				; measured value to #926 (MC)
+							
+							G53 G1 X[[#925 + #926]/2] ; position X to new center point
+							#921 = [[#925 + #926]/2] ; store current X center pos. #921						
+							#911 = #5001			 ; update current X position (WC)
+							msg "Measured X distance (2nd) = " [#926 - #925]
+						Endif
+						
+						G10 L2 P#5220 X[#921-#4981] Y[#922-#4982] ; Set active coordiate system to found values ( X/Y only)
+						msg "Active Coordinate System (XY only) updated !!!"
+	
+					Else	; Inside measurement
+						G90 G38.2 Z[#916] F[#4988] 	; Move to measurement level at low feed rate
+	
+						If [#5067 == 1]				; When sensor did trip
+							errmsg "Collision While moving to measurement level"
+						Endif
+						
+						#918 = -1					; set X- direction
+						Gosub 3D_X_moves_inside
+						#925 = #921					; measured value to #925 (MC)
+						
+						#918 = 1					; set X+ direction
+						Gosub 3D_X_moves_inside
+						#926 = #921					; measured value to #926 (MC)
+						
+						G53 G1 X[[#925 + #926]/2]	; position X to new center point
+						#921 = [[#925 + #926]/2]	; store current X center pos. #921
+						#911 = #5001				; update current X position (WC)
+						msg "Measured X distance = " [#926 - #925]
+						
+						#918 = -1					; set Y- direction
+						Gosub 3D_Y_moves_inside
+						#927 = #922					; measured value to #927 (MC)
+						
+						#918 = 1					; set Y+ direction
+						Gosub 3D_Y_moves_inside
+						#928 = #922			; measured value to #928 (MC)
+						
+						G53 G1 Y[[#927 + #928]/2]	; position X to new center point
+						#922 = [[#927 + #928]/2]	; store current Y center pos. #922
+						#912 = #5002				; update current X position (WC)
+						msg "Measured Y distance = " [#928 - #927]
+						
+						If [ABS[[#926-#925] - [#928-#927]] > [[#928-#927]/200]]	; repeat X measurement if delta XY >2%
+						
+							#918 = -1					; set X- direction
+							Gosub 3D_X_moves_inside
+							#925 = #921					; measured value to #925 (MC)
+							
+							#918 = 1					; set X+ direction
+							Gosub 3D_X_moves_inside
+							#926 = #921					; measured value to #926 (MC)
+							
+							G53 G1 X[[#925 + #926]/2]	; position X to new center point
+							#921 = [[#925 + #926]/2]	; store current X center pos. #921
+							#911 = #5001				; update current X position (WC)
+							msg "Measured X distance = " [#926 - #925]
+						Endif
+						
+						G1 Z[#915] F[#4988] 	; Move to safe Z at low feed rate
+						
+						G10 L2 P#5220 X[#921-#4981] Y[#922-#4982]	; Set active coordiate system to found values ( X/Y only)
+						msg "Active Coordinate System (XY only) updated !!!"
+					
+					Endif
+	
+					F1000					; restore feed rate to a practical value
+					G90						; restore absolute distance mode
+	
+				Else
+					msg "Input parameters out of range !"
+				Endif
+			Else
+				msg "Circle Zeroing => User Canceled !"
+			Endif
+		Endif
+    Else
+        msg "Not available in simulation mode"
+    Endif
+Endsub
+
+
+; + + + + + + + 3D_X/Y_move routines + + + + + + +
+
+; Input paramers:
+; #911 X start position (WC)
+; #912 Y start position (WC)
+; #913 Z-zero position (WC)
+  
+; #915  Safe-Z level
+; #916  Z-measurement level
+; #917  move out distance
+; #918  move out direction flag
+
+; #4986	Probe tip ball radius
+; #4987	Probe tip ball offset
+; #4988	Low feed rate
+; #4989	Ultra low feed rate
+
+; Output parameters:
+; #921	Mesured X value (MC)
+; #922	Mesured Y value (MC)
+	
+Sub 3D_X_moves_outside
+ 	G90 G38.2 X [#911 + [#917*#918]] ; move to "X outward" point (start pos + outwards dist * direction)
+
+	If [#5067 == 1]				; When sensor did trip
+	    errmsg "Collision While moving out"
+    Endif
+	
+	G90 G38.2 Z[#916]			; move to X/Y measurement level
+	
+	If [#5067 == 1]				; When sensor did trip
+	    errmsg "Collision While lowering Z"
+    Endif
+	
+	G90 G38.2 X[#911]			; move back towards X start pos.
+	
+	If [#5067 <> 1]				; When sensor did not trip
+	    errmsg "No Workpiece detected"
+	Endif
+	
+	G90 G1 X[#5061+[0.2*#918]] ; Move back to touch point +0.2mm
+	F[#4989]  					; ultra low feed rate
+	G91 G38.2 X+[-0.4*#918]		; Repeat measurement at ultra low feed rate
+	F[#4988]  					; back to low feed rate
+
+	If [#5067 <> 1]				; When sensor did not trip
+		errmsg "Sensor did not trip in second move"
+	Endif
+	
+	#921 = [#5051+[-[#4986+#4987]*#918]] ; Store measured X value in #921 (MC) 
+	G90 G1 X [#5061+[0.5*#918]]	; Back-off from touch point with 0.5mm (to protect tip-ball)
+	G1 Z[#915]					; Move to Safe-Z height
+	G1 X[#911]					; return to starting point
+Endsub
+
+Sub 3D_Y_moves_outside
+ 	G90 G38.2 Y [#912 + [#917*#918]] ; move to "Y outward" point (start pos + outwards dist * direction)
+
+	If [#5067 == 1]				; When sensor did trip
+	    errmsg "Collision While moving out"
+    Endif
+
+	G90 G38.2 Z[#916]			; move to X/Y measurement level
+	
+	If [#5067 == 1]				; When sensor did trip
+	    errmsg "Collision While lowering Z"
+    Endif
+	
+	G90 G38.2 Y[#912]			; move back towards X start pos.
+	
+	If [#5067 <> 1]				; When sensor did not trip
+	    errmsg "No Workpiece detected"
+	Endif
+	
+	G90 G1 Y[#5062+[0.2*#918]]	; Move back to touch point +0.2mm
+	F[#4989]  					; ultra low feed rate
+	G91 G38.2 Y+[-0.4*#918]		; Repeat measurement at ultra low feed rate
+	F[#4988]  					; back to low feed rate
+
+	If [#5067 <> 1]				; When sensor did not trip
+		errmsg "Sensor did not trip in second move"
+	Endif
+	
+	#922 = [#5052+[-[#4986+#4987]*#918]]	; Store measured X value in #922 (MC) 
+	G90 G1 Y[#5062+[0.5*#918]]	; Back-off from touch point with 0.5mm (to protect tip-ball)
+	G1 Z[#915]					; Move to Safe-Z height
+	G1 Y[#912]					; return to starting point
+Endsub
+
+Sub 3D_X_moves_inside
+ 	G90 G38.2 X [#911 + [#917*#918]] ; move X outward till trippoint
+
+	If [#5067 <> 1]				; When sensor did not trip
+	    errmsg "No workpiece found"
+    Endif
+
+	G90 G1 X[#5061+[-0.2*#918]] ; Move back to touch point -0.2mm
+	F[#4989]  					; ultra low feed rate
+	G91 G38.2 X+[0.4*#918]		; Repeat measurement at ultra low feed rate
+	F[#4988]  					; back to low feed rate
+
+	If [#5067 <> 1]				; When sensor did not trip
+		errmsg "Sensor did not trip in second move"
+	Endif
+	
+	#921 = [#5051-[-[#4986+#4987]*#918]] ; Store measured X value in #921 (MC) 
+	G90 G1 X[#911]				; return to starting point
+Endsub
+
+Sub 3D_Y_moves_inside
+ 	G90 G38.2 Y [#912 + [#917*#918]] ; move Y outward till trippoint
+
+	If [#5067 <> 1]				; When sensor did not trip
+	    errmsg "No workpiece found"
+    Endif
+
+	G90 G1 Y[#5062+[-0.2*#918]] ; Move back to touch point -0.2mm
+	F[#4989]  					; ultra low feed rate
+	G91 G38.2 Y+[0.4*#918]		; Repeat measurement at ultra low feed rate
+	F[#4988]  					; back to low feed rate
+
+	If [#5067 <> 1]				; When sensor did not trip
+		errmsg "Sensor did not trip in second move"
+	Endif
+	
+	#922 = [#5052-[-[#4986+#4987]*#918]] ; Store measured X value in #922 (MC) 
+	G90 G1 Y[#912]				; return to starting point
+Endsub
+
+; + + + + + + + End 3D_X/Y_move routines + + + + + + +
+
+
+
+;****************************************************************
+;  Tool lenght measurement after 3D-Probe AND Reference height measurement
+;****************************************************************
+
+; parameters used in Sub m_tool + Sub calibrate_tool_setter
+;* #4994 = ...  ;(Last measured 3D Probe Z value in MC)
+;* #4996 = ...  ;(Tool measurement safe hight, used inside m_tool)
+;* #4997 = ...  ;(X position of tool length measurement)
+;* #4998 = ...  ;(Y position of tool length measurement)
+;* #4999 = ...  ;(Chuck height, or zero - tool length height)
+
+Sub M_Tool_after_3D_or_Ref
+
+    If [[#5380==0] and [#5397==0]] ;do this only when not simulating and not rendering
+
+        If [#5068 <> #4984]] ;toolsetter available?
+            warnmsg "Toolsetter not available!!!"
+        Else
+
+			If [[#4996 == 0] and [#4997 == 0] and [#4998 == 0] and [#4999 == 0]] ;Check If toolsetter is calibrated
+				errmsg "Toolsetter not available!!!"
+			Else
+	
+				G0 G53 z#4996 ; move to safe z
+				dlgmsg "Tool length measurement" "tool number" 5016 "approx tool length" 5017 "tool diameter" 5018
+	
+				If [#5398 == 1] ;User pressed OK?
+		
+					While [[#5016 < 1] OR [#5016 > 99]]
+						DlgMsg "Tool must be in range of 1 .. 99" "tool number" 5016
+					Endwhile
+				
+					G0 G53 x#4997 y#4998	   ; move to toolsetter coordinates
+					F1000
+					G01 G53 z[#4999+12+#5017] ; move to 12mm above chuck height + approx tool length
+					F[#4988] 			;Start probe move at low feed rate
+					G91 G38.2 z-20		;First probe move, not more than 20mm below start position
+		
+					If [#5067 <> 1]		; When sensor did not trip
+						warnmsg "Tool setter did not trip"
+					Endif
+		
+					G90 G1 Z[#5063+0.2]  	;Move back to touch point +0.2mm
+					F[#4989]  			; reduce feed
+					G91 G38.2 z-0.4 		; Repeat measurement at ultra low feed rate
+		
+					If [#5067 <> 1]		; When sensor did not trip
+						warnmsg "Sensor did not trip in second move"
+					Endif
+		
+					G90				   ; Absolute coordinates
+					F1000			   ; restore feed rate to a practical value
+					G0 G53 z#4996		   ;back to safe height
+		
+					; Calculate tool offset and adjust G54..G59.3 Z value accordingly
+					#5017 = [#5053 - #4999]	; Tool lenght is trippoint minus chuck height
+					msg "Measured Tool length: "#5017 "mm "
+					msg "Zero point adjustment: "[#5223-[#4994 + #5017]]
+					G10 L2 P#5220 Z[#4994 + #5017] ; adjust zero point
+			
+					; Store tool data
+					#[5400 + #5016] = 0	; Tool length set to "0" because tool length is corrected by Z-zero adjustment
+					#[5500 + #5016] = #5018 	; Store tool diameter for radius correction purposes
+					msg "Tool Diameter="#[5500 + #5016]" stored at tool "#5016
+
+				Else
+					msg "Tool measurement => User Canceled !"
+				Endif
+			Endif	
+        Endif
+	Else
+      msg "Not available in simulation mode"
+    Endif
+Endsub
+
+
+;****************************************************
+;  Calibration (pre-adjusting) routine for tool length measurement
+;  after manual tool change (call from MDI)
+;****************************************************
+
+;* calibrate tool length measurement position and height.
+;* variables #4996 - #4999 are set to be used in m_tool.
+Sub calibrate_tool_setter
+    warnmsg "close MDI, check correct calibr. tool nr 99 in tool table, press ctrl-g"
+    warnmsg "jog to toolchange safe height, when done press ctrl-g"
+    #4996=#5073 ;Store toolchange safe height machine coordinates
+    warnmsg "insert cal. tool 99 len="#5499", jog above tool setter, press ctrl-g"
+    ;store x y in non volatile parameters (4000 - 4999)
+    #4997=#5071 ;machine pos X
+    #4998=#5072 ;machine pos Y
+    ;Determine minimum toolchuck height and store into #4999
+    g38.2 g91 z-20 f30
+    #4999=[#5053 - #5499] ;probepos Z - calibration tool length = toolchuck height
+    g90
+    g0 g53 z#4996
+    msg "calib. done safe height="#4996 " X="#4997 " Y="#4998 " Chuck height="#4999
+Endsub
+
+
+;#########################################################################################
+;##############      END WORKPIECE ZEROING USING THE 3D PROBE       ####################
+;#########################################################################################
